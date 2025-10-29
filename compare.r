@@ -1,75 +1,77 @@
 library(ggplot2)
-library(scales)
+library(patchwork)  # install if missing: install.packages("patchwork")
 
-load("data_10day.RData") # original 10-day data
-# load("out_mcmc_1day_vnp.RData") # VNP results
-mpg_X_py <- read.csv("periodogram_X_py.csv") # periodogram for X saved from the python results
-model_total <- read.csv("1day_quarterHZ_total_model.csv") # total model fit from the python results
+# --- Load R output ---
+r_data <- read.table("r_psd.txt", header = TRUE)
+cat("Loaded", nrow(r_data), "rows from r_psd.txt\n")
 
+# --- Load Python output ---
+py_data <- read.table(
+  "python_psd.txt",
+  header = FALSE,
+  comment.char = "#",
+  skip = 1,
+  col.names = c("freq_Hz", "psd_X2", "psd_model")
+)
+cat("Loaded", nrow(py_data), "rows from python_psd.txt\n")
 
+# Ensure numeric and align by overlapping frequencies
+r_data[] <- lapply(r_data, as.numeric)
+py_data[] <- lapply(py_data, as.numeric)
 
-# Extract 1-day data -> truncate it to be sampling frequency = .25HZ
-data_1day <- data_10day[seq(1,43201,by=2),]
+# Trim to common frequency range (in case one file is shorter)
+n <- min(nrow(r_data), nrow(py_data))
+r_data <- r_data[1:n, ]
+py_data <- py_data[1:n, ]
 
+# Compute errors
+err_periodogram_abs <- abs(r_data$psd_X2 - py_data$psd_X2)
+err_model_abs       <- abs(r_data$psd_model - py_data$psd_model)
+err_periodogram_rel <- err_periodogram_abs / py_data$psd_X2
+err_model_rel       <- err_model_abs / py_data$psd_model
 
-# Here is how I got the results from Python
-lisa_data = LISAData.from_hdf5("tdi.h5")[1:43201:2]
+# --- Plot 1: PSD overlay ---
+p1 <- ggplot() +
+  geom_line(data = r_data, aes(x = freq_Hz, y = psd_X2, color = "Data (R)"), linewidth = 0.9) +
+  geom_line(data = r_data, aes(x = freq_Hz, y = psd_model, color = "Model (R)"), linewidth = 0.9) +
+  geom_line(data = py_data, aes(x = freq_Hz, y = psd_X2, color = "Data (Python)"), linewidth = 0.9, linetype = "dashed") +
+  geom_line(data = py_data, aes(x = freq_Hz, y = psd_model, color = "Model (Python)"), linewidth = 0.9, linetype = "dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c(
+    "Data (R)" = "#1f78b4",
+    "Data (Python)" = "#33a02c",
+    "Model (R)" = "#e31a1c",
+    "Model (Python)" = "#ff7f00"
+  )) +
+  labs(x = NULL, y = "PSD [1/Hz]", title = "R vs Python PSD Comparison") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom", legend.title = element_blank())
 
-
-# frequencies
-index <- seq(0, .25/2, len=10801)
-
-
-# # store vnp results for ggplot
-# vnp_1day <- data.frame(
-#   f11 = out_mcmc_vnp$psd.median[1,1,-1]*var(data_1day[,1])*pi/.25, # VNP was fitted to the standardized data,
-#                                                                    # so here rescales the results to fit the original data
-#   f22 = out_mcmc_vnp$psd.median[2,2,-1],
-#   f33 = out_mcmc_vnp$psd.median[3,3,-1],
-#   f12 = out_mcmc_vnp$psd.median[1,2,-1],
-#   f13 = out_mcmc_vnp$psd.median[1,3,-1],
-#   f23 = out_mcmc_vnp$psd.median[2,3,-1],
-#   f21 = out_mcmc_vnp$psd.median[2,1,-1],
-#   f31 = out_mcmc_vnp$psd.median[3,1,-1],
-#   f32 = out_mcmc_vnp$psd.median[3,2,-1],
-#   freq = index[-1]
-# )
-
-
-# store periodogram for ggplot
-mpg_1day_X <- data.frame(
-  f = mpg_X_py[-1,1],
-  freq = index[-1]
+# --- Plot 2: Error subplot ---
+error_df <- data.frame(
+  freq_Hz = r_data$freq_Hz,
+  abs_error_data = err_periodogram_abs,
+  abs_error_model = err_model_abs,
+  rel_error_data = err_periodogram_rel,
+  rel_error_model = err_model_rel
 )
 
-# store total model results for ggplot
-total_modal_1day <- data.frame(
-  f = model_total[,1],
-  freq = index[-1]
-)
+p2 <- ggplot(error_df) +
+  geom_line(aes(x = freq_Hz, y = rel_error_data, color = "Data (rel error)"), linewidth = 0.8) +
+  geom_line(aes(x = freq_Hz, y = rel_error_model, color = "Model (rel error)"), linewidth = 0.8, linetype = "dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c(
+    "Data (rel error)" = "#377eb8",
+    "Model (rel error)" = "#e41a1c"
+  )) +
+  labs(x = "Frequency [Hz]", y = "Relative Error", title = "R vs Python Relative Errors") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom", legend.title = element_blank())
 
+# Combine vertically
+combined_plot <- p1 / p2 + plot_layout(heights = c(2, 1))
 
-# plot for the single X channel
-plot_1day_11 <- ggplot(mpg_1day_X) +
-  geom_line(aes(x = freq, y = f)) +
-  geom_line(data = vnp_1day, aes(x = freq, y = Re(f11), color = 'vnp'), linewidth = 1) +
-  geom_line(data = total_modal_1day, aes(x = freq, y = f, color = 'total model'), linewidth = 1) +
-  scale_x_log10(labels = trans_format("log10", math_format(10^.x))) +
-  scale_y_log10(labels = trans_format("log10", math_format(10^.x))) +
-  scale_color_manual(values = c("vnp" = "red3", "total model" = "cyan3")) +
-  labs(x = NULL, y = "PSD", title = expression(S[X2])) +
-  theme(axis.text.x = element_blank(),
-        axis.text.y = element_text(size = 20),
-        axis.title = element_text(size = 20),
-        plot.title = element_text(size = 20),
-        legend.position = 'none')
-
-
-
-
-
-
-
-
-
-
+ggsave("comparison_psd_with_errors.png", plot = combined_plot, width = 8, height = 7, dpi = 300)
+cat("Done. Saved comparison_psd_with_errors.png\n")
